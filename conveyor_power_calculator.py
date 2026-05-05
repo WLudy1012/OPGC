@@ -63,19 +63,22 @@ def generate_modes(b: float, max_ti: int = MAX_TI) -> list[BeltMode]:
 
 
 def find_best(b: float, q: float, aim: float) -> Solution | None:
+    exact_mode = aim <= 1e-9
+
     if q <= BASE_GENERATION:
         total_generation = BASE_GENERATION
         overage = total_generation - q
-        if overage <= aim + 1e-9:
+        if exact_mode or overage <= aim + 1e-9:
             return Solution(e=0, groups=[], total_generation=total_generation, overage=overage)
         return None
 
     scale = 100
-    upper_i = int(round((q + aim) * scale))
     e_min = max(0, math.ceil((q - BASE_GENERATION) / b))
     modes = generate_modes(b)
     mode_power_i = [int(round(m.per_gen * scale)) for m in modes]
     min_mode_i = min(mode_power_i)
+    initial_over_i = int(round(max(0.0, BASE_GENERATION + e_min * b - q) * scale))
+    upper_i = int(round((q + aim) * scale)) if not exact_mode else int(round(q * scale)) + initial_over_i
 
     def better(lhs: Solution | None, rhs: Solution) -> Solution:
         if lhs is None:
@@ -86,12 +89,16 @@ def find_best(b: float, q: float, aim: float) -> Solution | None:
 
     dp_layers: list[dict[int, tuple[int, int, int, int]]] = [{0: (0, 0, -1, -1)}]
     e = 0
+    best_overall: Solution | None = None
     while True:
-        if e > e_min and BASE_GENERATION + (e * min_mode_i / scale) > q + aim + 1e-9:
-            return None
+        effective_aim = best_overall.overage if exact_mode and best_overall is not None else aim
+        if e > e_min and BASE_GENERATION + (e * min_mode_i / scale) > q + effective_aim + 1e-9:
+            return best_overall if exact_mode else None
         e += 1
         prev = dp_layers[e - 1]
         cur: dict[int, tuple[int, int, int, int]] = {}
+        if exact_mode and best_overall is not None:
+            upper_i = int(round((q + best_overall.overage) * scale))
         limit_i = max(0, upper_i - int(round(BASE_GENERATION * scale)))
 
         for total_i, (splitters, mask, _pt, _mi) in prev.items():
@@ -122,7 +129,9 @@ def find_best(b: float, q: float, aim: float) -> Solution | None:
         best_for_e: Solution | None = None
         for total_i in cur.keys():
             total_generation = BASE_GENERATION + (total_i / scale)
-            if total_generation + 1e-9 < q or total_generation - 1e-9 > q + aim:
+            if total_generation + 1e-9 < q:
+                continue
+            if not exact_mode and total_generation - 1e-9 > q + aim:
                 continue
 
             overage = total_generation - q
@@ -140,7 +149,12 @@ def find_best(b: float, q: float, aim: float) -> Solution | None:
             best_for_e = better(best_for_e, cand)
 
         if best_for_e is not None:
-            return best_for_e
+            if exact_mode:
+                best_overall = better(best_overall, best_for_e)
+                if best_overall.overage <= 1e-9:
+                    return best_overall
+            else:
+                return best_for_e
 
 
 def format_number(value: float) -> str:
